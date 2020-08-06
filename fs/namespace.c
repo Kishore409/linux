@@ -730,14 +730,8 @@ mountpoint:
 			goto done;
 	}
 
-	if (!new) {
-		/*
-		 * We are allocating as GFP_NOFS to appease lockdep:
-		 * since we are holding i_mutex we should not try to
-		 * recurse into filesystem code.
-		 */
-		new = kmalloc(sizeof(struct mountpoint), GFP_NOFS);
-	}
+	if (!new)
+		new = kmalloc(sizeof(struct mountpoint), GFP_KERNEL);
 	if (!new)
 		return ERR_PTR(-ENOMEM);
 
@@ -3141,12 +3135,19 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 		return -EINVAL;
 
 	/* ... and get the mountpoint */
-	retval = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
+	retval = nameidata_set_temporary(dir_name);
 	if (retval)
 		return retval;
 
+	retval = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
+	if (retval) {
+		nameidata_restore_temporary();
+		return retval;
+	}
+
 	retval = security_sb_mount(dev_name, &path,
 				   type_page, flags, data_page);
+	nameidata_restore_temporary();
 	if (!retval && !may_mount())
 		retval = -EPERM;
 	if (!retval && (flags & SB_MANDLOCK) && !may_mandlock())
@@ -3162,18 +3163,11 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	 * The nosymfollow option used to be extracted from data_page by an LSM.
 	 * It is now passed in as MS_NOSYMFOLLOW.  We need to also check in
 	 * the old place until all callers have been updated to use the flag.
-	 * Some callers will pass both for cross-kernel compatibility, so
-	 * only check if the new flag isn't already present.
-	 * TODO(b/152074038): Remove this check when all devices are on a kernel
-	 * that supports MS_NOSYMFOLLOW.
 	 */
-	if (data_page && !(flags & MS_NOSYMFOLLOW)) {
+	if (data_page) {
 		if (!strncmp((char *)data_page, "nosymfollow", 11) ||
-		    strstr((char *)data_page, ",nosymfollow")) {
-			WARN(1,
-			     "nosymfollow passed in mount data should be changed to the MS_NOSYMFOLLOW flag.");
+		    strstr((char *)data_page, ",nosymfollow"))
 			flags |= MS_NOSYMFOLLOW;
-		}
 	}
 
 	/* Separate the per-mountpoint flags */
